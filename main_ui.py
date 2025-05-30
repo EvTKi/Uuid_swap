@@ -2,22 +2,40 @@
 
 import sys
 import os
-from PySide6.QtWidgets import (
-    QApplication, QWidget, QLabel, QPushButton, QLineEdit, QTextEdit, QGridLayout, QFileDialog, QMessageBox
-)
-from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor, QFont, QShortcut, QKeySequence
+
+from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QLineEdit, QTextEdit, QGridLayout, QFileDialog,
+                               QMessageBox, QMenuBar, QVBoxLayout)
+from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor, QFont, QShortcut, QKeySequence, QPalette, QAction
+
+from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor, QFont, QShortcut, QKeySequence, QPalette
 from PySide6.QtCore import Qt
-import backend  # ваш backend.py должен быть рядом или в PYTHONPATH
+import backend  # backend.py должен быть рядом
 
 
 class GUIDReplacer(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(
-            "Замена GUID в XML по CSV (PySide6, разделено на UI и backend)")
-        self.resize(940, 700)
+        self.setWindowTitle("Замена GUID в XML по CSV (PySide6 с темами)")
+        self.resize(940, 730)
+        self.current_theme = "light"
 
-        grid = QGridLayout(self)
+        # --- Меню ---
+        layout = QVBoxLayout(self)
+        self.menubar = QMenuBar(self)
+        menu_theme = self.menubar.addMenu("Тема")
+        self.action_light = QAction("Светлая", self)
+        self.action_dark = QAction("Тёмная", self)
+        self.action_light.setCheckable(True)
+        self.action_dark.setCheckable(True)
+        self.action_light.setChecked(True)
+        menu_theme.addAction(self.action_light)
+        menu_theme.addAction(self.action_dark)
+        self.action_light.triggered.connect(lambda: self.set_theme('light'))
+        self.action_dark.triggered.connect(lambda: self.set_theme('dark'))
+        layout.setMenuBar(self.menubar)
+
+        # --- UI ---
+        grid = QGridLayout()
         self.xml_input = QLineEdit()
         self.csv_input = QLineEdit()
         grid.addWidget(QLabel("XML-файл:"), 0, 0)
@@ -25,33 +43,70 @@ class GUIDReplacer(QWidget):
         self.xml_btn = QPushButton("Выбрать...")
         grid.addWidget(self.xml_btn, 0, 2)
         self.xml_btn.clicked.connect(self.pick_xml)
-
         grid.addWidget(QLabel("CSV-файл:"), 1, 0)
         grid.addWidget(self.csv_input, 1, 1)
         self.csv_btn = QPushButton("Выбрать...")
         grid.addWidget(self.csv_btn, 1, 2)
         self.csv_btn.clicked.connect(self.pick_csv)
-
         self.replace_btn = QPushButton("Выполнить замену")
         grid.addWidget(self.replace_btn, 2, 0, 1, 3)
         self.replace_btn.clicked.connect(self.replace_guids)
-
         grid.addWidget(QLabel("Преобразованный XML с подсветкой:"), 3, 0, 1, 3)
         self.text_preview = QTextEdit()
         self.text_preview.setFont(QFont("Consolas", 10))
         self.text_preview.setReadOnly(True)
         grid.addWidget(self.text_preview, 4, 0, 1, 3)
+        layout.addLayout(grid)
 
-        # Горячие клавиши: (позже дополним)
+        # --- Горячие клавиши ---
         QShortcut(QKeySequence("Ctrl+O"), self, self.pick_xml)
         QShortcut(QKeySequence("Ctrl+S"), self, self.replace_guids)
-        # поиск будет позже
-        # QShortcut(QKeySequence("Ctrl+F"), self, ...)
+        # поиск будет позже: QShortcut(QKeySequence("Ctrl+F"), self, ...)
 
-        # Вспомогательные переменные
         self.guid_map = {}
         self.xml_file = ""
         self.csv_file = ""
+        self.set_theme("light")
+
+    def set_theme(self, theme):
+        app = QApplication.instance()
+        if theme == "light":
+            app.setStyle("Fusion")
+            palette = QPalette()
+            palette.setColor(QPalette.Window, Qt.white)
+            palette.setColor(QPalette.WindowText, Qt.black)
+            palette.setColor(QPalette.Base, Qt.white)
+            palette.setColor(QPalette.AlternateBase, QColor(245, 245, 245))
+            palette.setColor(QPalette.ToolTipBase, Qt.black)
+            palette.setColor(QPalette.ToolTipText, Qt.black)
+            palette.setColor(QPalette.Text, Qt.black)
+            palette.setColor(QPalette.Button, QColor(232, 232, 232))
+            palette.setColor(QPalette.ButtonText, Qt.black)
+            palette.setColor(QPalette.BrightText, Qt.red)
+            palette.setColor(QPalette.Highlight, QColor(38, 79, 120))
+            palette.setColor(QPalette.HighlightedText, Qt.white)
+            app.setPalette(palette)
+            self.action_light.setChecked(True)
+            self.action_dark.setChecked(False)
+        else:
+            app.setStyle("Fusion")
+            palette = QPalette()
+            palette.setColor(QPalette.Window, QColor(30, 30, 30))
+            palette.setColor(QPalette.WindowText, Qt.white)
+            palette.setColor(QPalette.Base, QColor(32, 32, 32))
+            palette.setColor(QPalette.AlternateBase, QColor(44, 44, 44))
+            palette.setColor(QPalette.ToolTipBase, Qt.white)
+            palette.setColor(QPalette.ToolTipText, Qt.white)
+            palette.setColor(QPalette.Text, Qt.white)
+            palette.setColor(QPalette.Button, QColor(44, 44, 44))
+            palette.setColor(QPalette.ButtonText, Qt.white)
+            palette.setColor(QPalette.BrightText, Qt.red)
+            palette.setColor(QPalette.Highlight, QColor(38, 79, 120))
+            palette.setColor(QPalette.HighlightedText, Qt.white)
+            app.setPalette(palette)
+            self.action_light.setChecked(False)
+            self.action_dark.setChecked(True)
+        self.current_theme = theme
 
     def pick_xml(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -74,7 +129,6 @@ class GUIDReplacer(QWidget):
         csv_path = self.csv_input.text().strip()
         if not (os.path.isfile(xml_path) and os.path.isfile(csv_path)):
             return
-
         try:
             self.guid_map = backend.load_guid_map(csv_path)
             xml_text = backend.read_text_file(xml_path)
@@ -82,7 +136,6 @@ class GUIDReplacer(QWidget):
             QMessageBox.critical(self, "Ошибка чтения", str(e))
             return
 
-        # Выделение всех old_uid и добавление новых
         highlights = backend.find_uid_matches(xml_text, self.guid_map)
         self.text_preview.clear()
         fmt_plain = QTextCharFormat()
@@ -94,11 +147,8 @@ class GUIDReplacer(QWidget):
         cursor = self.text_preview.textCursor()
         pos = 0
         for start, end, old_uid, new_uid in highlights:
-            # до uid
             cursor.insertText(xml_text[pos:start], fmt_plain)
-            # старый uid (FULL)
             cursor.insertText(xml_text[start:end], fmt_old)
-            # новый uid (скобки)
             cursor.insertText(f"({new_uid})", fmt_new)
             pos = end
         cursor.insertText(xml_text[pos:], fmt_plain)
