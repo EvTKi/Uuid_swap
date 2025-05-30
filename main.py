@@ -2,25 +2,25 @@ import sys
 import csv
 import re
 import uuid
-from PyQt5.QtWidgets import (
+import os
+from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QLineEdit, QTextEdit, QGridLayout, QFileDialog, QMessageBox
 )
-from PyQt5.QtGui import QTextCharFormat, QColor, QTextCursor, QFont
-from PyQt5.QtCore import Qt
-import os
+from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor, QFont
+from PySide6.QtCore import Qt
 
 
 class GUIDReplacer(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Замена GUID в XML по CSV (PyQt5)")
-        self.resize(920, 600)
+        self.setWindowTitle("Замена GUID в XML по CSV (PySide6)")
+        self.resize(930, 650)
         self.guid_map = {}
 
-        self.xml_file = ""
-        self.csv_file = ""
-
-        layout = QGridLayout()
+        layout = QGridLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(8)
 
         layout.addWidget(QLabel("XML-файл:"), 0, 0)
         self.xml_input = QLineEdit()
@@ -48,11 +48,13 @@ class GUIDReplacer(QWidget):
         self.text_preview.setFont(font)
         layout.addWidget(self.text_preview, 4, 0, 1, 3)
 
-        self.setLayout(layout)
+        # Файлы XML и CSV
+        self.xml_file = ""
+        self.csv_file = ""
 
     def pick_xml(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Выберите XML-файл", "", "XML files (*.xml);;All files (*)")
+            self, "Выберите XML-файл", "", "XML файлы (*.xml);;Все файлы (*)")
         if file_path:
             self.xml_file = file_path
             self.xml_input.setText(file_path)
@@ -60,7 +62,7 @@ class GUIDReplacer(QWidget):
 
     def pick_csv(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Выберите CSV-файл", "", "CSV files (*.csv);;All files (*)")
+            self, "Выберите CSV-файл", "", "CSV файлы (*.csv);;Все файлы (*)")
         if file_path:
             self.csv_file = file_path
             self.csv_input.setText(file_path)
@@ -72,7 +74,7 @@ class GUIDReplacer(QWidget):
         if not os.path.isfile(self.xml_input.text().strip()) or not os.path.isfile(self.csv_input.text().strip()):
             return
 
-        # Загрузить соответствия
+        # Читаем таблицу соответствий
         try:
             with open(self.csv_input.text().strip(), newline='', encoding='utf-8') as csvfile:
                 reader = csv.DictReader(csvfile, delimiter=';')
@@ -98,36 +100,38 @@ class GUIDReplacer(QWidget):
         self.text_preview.clear()
         self.text_preview.setPlainText(xml_text)
 
-        # Настройка форматов (цвета текста)
+        # Настройка форматов (цвет + зачеркивание)
         fmt_old = QTextCharFormat()
         fmt_old.setForeground(QColor("red"))
+        fmt_old.setFontStrikeOut(True)
+
         fmt_new = QTextCharFormat()
         fmt_new.setForeground(QColor("green"))
 
         cursor = self.text_preview.textCursor()
         cursor.beginEditBlock()
 
-        # Одним проходом по тексту ищем и подсвечиваем все old_uid, вставляя новый (в скобках)
+        # Регулярка для поиска всех old_uid
         pattern = re.compile(
             "|".join(map(re.escape, sorted(self.guid_map, key=len, reverse=True))))
         pos = 0
         offset = 0
-        xml_text2 = xml_text  # Оригинал для поиска
+        xml_text2 = xml_text
         for match in pattern.finditer(xml_text2):
             old_uid = match.group()
             new_uid = self.guid_map[old_uid]
             start = match.start() + offset
             end = match.end() + offset
 
-            # Выделить старый UID красным
+            # Красный + зачеркнутый для старого UID
             cursor.setPosition(start)
             cursor.setPosition(end, QTextCursor.KeepAnchor)
             cursor.setCharFormat(fmt_old)
             cursor.clearSelection()
-            # Вставить скобками новый UID сразу после старого, зелёным
+
+            # Вставить новый UID в скобках (зелёный)
             cursor.setPosition(end)
             cursor.insertText(f"({new_uid})", fmt_new)
-            # Учесть смещение во всей строке (добавили символы!)
             offset += len(f"({new_uid})")
 
         cursor.endEditBlock()
@@ -141,7 +145,6 @@ class GUIDReplacer(QWidget):
             QMessageBox.warning(self, "Внимание", "Файлы не найдены!")
             return
 
-        # Чтение и замена (без скобок, только сами UID)
         try:
             with open(self.xml_input.text().strip(), encoding='utf-8') as xmlfile:
                 xml_text = xmlfile.read()
@@ -174,4 +177,4 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     win = GUIDReplacer()
     win.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
