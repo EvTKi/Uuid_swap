@@ -210,61 +210,67 @@ class GUIDReplacer(QWidget):
         self.text_preview.setExtraSelections([])
 
     def build_xml_tree_with_ns(self, xml_text):
+        import io
+        import xml.etree.ElementTree as ET
         from xml.etree.ElementTree import ParseError
+        import re
 
         self.tree_xml.clear()
 
-        # "readable" парсинг с устранением ошибок корня
+        # — есть ли корректный корень? (например, <rdf:RDF ...> после <?xml ?>)
         txt = xml_text.lstrip()
-        is_cim_root = False
-        # — есть ли корректный корень вида <rdf:RDF ...>
-        if re.match(r"<\?xml\b[^>]*\?>", txt):
-            # xml declaration есть, памятьаем...
-            xml_decl_end = txt.find("?>") + 2
-            body = txt[xml_decl_end:].lstrip()
-            is_cim_root = bool(re.match(r"<[a-zA-Z_][a-zA-Z0-9\-\._]*:", body))
+        root_tag_match = re.match(
+            r"(<\?xml\b[^>]*\?>)?\s*<([a-zA-Z0-9_:\-]+)", txt)
+        if root_tag_match:
+            root_tag = root_tag_match.group(2)
+            has_root = True
         else:
-            is_cim_root = bool(re.match(r"<[a-zA-Z_][a-zA-Z0-9\-\._]*:", txt))
+            has_root = False
 
         try:
             safe_xml = xml_text.lstrip()
-            if not is_cim_root:
-                # Удаляем xml declaration (если есть)
+            if not has_root or root_tag.upper() == 'XML':
+                # Удаляем xml-declaration, если есть
                 safe_xml = re.sub(
                     r"<\?xml\b[^>]*\?>", "", safe_xml, count=1).lstrip()
                 safe_xml = "<ROOT>\n" + safe_xml + "\n</ROOT>"
-            # далее как раньше
+
+            # Разбираем namespace prefix <-> uri
             ns_map = dict(re.findall(
                 r'xmlns:([A-Za-z0-9_]+)="([^"]+)"', safe_xml))
             ns_uri2prefix = {uri: prefix for prefix, uri in ns_map.items()}
-            context = ET.iterparse(io.StringIO(safe_xml), events=("start",))
+
+            context = ET.iterparse(io.StringIO(
+                safe_xml), events=("start", "end"))
             parents = []
-            top_item = None
             elem2item = {None: None}
             for event, elem in context:
-                tag = elem.tag
-                if "}" in tag:
-                    nsuri, shorttag = tag[1:].split("}")
-                    prefix = ns_uri2prefix.get(nsuri, "")
-                    tag = f"{prefix}:{shorttag}" if prefix else shorttag
-                label = tag
-                uid = (elem.attrib.get('{http://www.w3.org/1999/02/22-rdf-syntax-ns#}about')
-                       or elem.attrib.get('rdf:about')
-                       or elem.attrib.get('rdf:resource')
-                       or elem.attrib.get('about')
-                       or elem.attrib.get('resource'))
-                if uid:
-                    label += f" [{uid}]"
-                node = QTreeWidgetItem([label])
-                node.setData(0, Qt.UserRole, (tag, elem.attrib.copy()))
-                if not parents:
-                    self.tree_xml.addTopLevelItem(node)
-                else:
-                    par = elem2item[parents[-1]]
-                    if par is not None:
-                        par.addChild(node)
-                elem2item[elem] = node
-                parents.append(elem)
+                if event == "start":
+                    tag = elem.tag
+                    if "}" in tag:
+                        nsuri, shorttag = tag[1:].split("}")
+                        prefix = ns_uri2prefix.get(nsuri, "")
+                        tag = f"{prefix}:{shorttag}" if prefix else shorttag
+                    label = tag
+                    uid = (elem.attrib.get('{http://www.w3.org/1999/02/22-rdf-syntax-ns#}about')
+                           or elem.attrib.get('rdf:about')
+                           or elem.attrib.get('rdf:resource')
+                           or elem.attrib.get('about')
+                           or elem.attrib.get('resource'))
+                    if uid:
+                        label += f" [{uid}]"
+                    node = QTreeWidgetItem([label])
+                    node.setData(0, Qt.UserRole, (tag, elem.attrib.copy()))
+                    if parents:
+                        parent_item = elem2item[parents[-1]]
+                        if parent_item:
+                            parent_item.addChild(node)
+                    else:
+                        self.tree_xml.addTopLevelItem(node)
+                    elem2item[elem] = node
+                    parents.append(elem)
+                elif event == "end":
+                    parents.pop()
             self.tree_xml.expandToDepth(2)
         except ParseError as e:
             self.tree_xml.addTopLevelItem(QTreeWidgetItem(
