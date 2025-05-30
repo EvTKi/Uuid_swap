@@ -1,13 +1,13 @@
 import sys
 import os
 import re
+import io
+import xml.etree.ElementTree as ET
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QLineEdit, QTextEdit, QGridLayout, QFileDialog,
-    QMessageBox, QMenuBar, QVBoxLayout, QHBoxLayout
+    QMessageBox, QMenuBar, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QSplitter
 )
-from PySide6.QtGui import (
-    QTextCharFormat, QColor, QTextCursor, QFont, QShortcut, QKeySequence, QPalette, QAction
-)
+from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor, QFont, QShortcut, QKeySequence, QPalette, QAction
 from PySide6.QtCore import Qt
 
 import backend  # backend.py должен быть рядом
@@ -17,12 +17,13 @@ class GUIDReplacer(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(
-            "Замена GUID в XML по CSV (PySide6 с поиском и темами)")
-        self.resize(940, 800)
+            "Замена GUID в XML по CSV (PySide6 — CIM XML, поиск, темы, структура)")
+        self.resize(1200, 860)
         self.current_theme = "light"
 
-        # --- Меню ---
         layout = QVBoxLayout(self)
+
+        # --- Меню ---
         self.menubar = QMenuBar(self)
         menu_theme = self.menubar.addMenu("Тема")
         self.action_light = QAction("Светлая", self)
@@ -36,26 +37,44 @@ class GUIDReplacer(QWidget):
         self.action_dark.triggered.connect(lambda: self.set_theme('dark'))
         layout.setMenuBar(self.menubar)
 
+        # --- Splitter: слева дерево XML, справа UI и предпросмотр ---
+        self.splitter = QSplitter(self)
+        layout.addWidget(self.splitter)
+
+        # -- Левая панель: дерево структуры XML --
+        self.tree_xml = QTreeWidget()
+        self.tree_xml.setHeaderLabel("Структура XML")
+        self.splitter.addWidget(self.tree_xml)
+        self.tree_xml.setMinimumWidth(280)
+        self.tree_xml.itemClicked.connect(self.xmltree_item_clicked)
+
+        # -- Правая панель: всё остальное
+        container = QWidget()
+        grid = QGridLayout(container)
+        self.splitter.addWidget(container)
+        self.splitter.setSizes([320, 880])
+
+        split_label = QLabel("Преобразованный XML с подсветкой:")
+        grid.addWidget(split_label, 0, 0, 1, 3)
+
         # --- Поля и кнопки выбора файлов ---
-        grid = QGridLayout()
+        grid.addWidget(QLabel("XML-файл:"), 1, 0)
         self.xml_input = QLineEdit()
-        self.csv_input = QLineEdit()
-        grid.addWidget(QLabel("XML-файл:"), 0, 0)
-        grid.addWidget(self.xml_input, 0, 1)
+        grid.addWidget(self.xml_input, 1, 1)
         self.xml_btn = QPushButton("Выбрать...")
-        grid.addWidget(self.xml_btn, 0, 2)
+        grid.addWidget(self.xml_btn, 1, 2)
         self.xml_btn.clicked.connect(self.pick_xml)
-        grid.addWidget(QLabel("CSV-файл:"), 1, 0)
-        grid.addWidget(self.csv_input, 1, 1)
+        grid.addWidget(QLabel("CSV-файл:"), 2, 0)
+        self.csv_input = QLineEdit()
+        grid.addWidget(self.csv_input, 2, 1)
         self.csv_btn = QPushButton("Выбрать...")
-        grid.addWidget(self.csv_btn, 1, 2)
+        grid.addWidget(self.csv_btn, 2, 2)
         self.csv_btn.clicked.connect(self.pick_csv)
         self.replace_btn = QPushButton("Выполнить замену")
-        grid.addWidget(self.replace_btn, 2, 0, 1, 3)
+        grid.addWidget(self.replace_btn, 3, 0, 1, 3)
         self.replace_btn.clicked.connect(self.replace_guids)
 
-        # --- Search bar ---
-        grid.addWidget(QLabel("Преобразованный XML с подсветкой:"), 3, 0, 1, 3)
+        # --- Search bar (поиск, циклический) ---
         search_layout = QHBoxLayout()
         self.search_line = QLineEdit()
         self.search_line.setPlaceholderText("Поиск...")
@@ -65,7 +84,6 @@ class GUIDReplacer(QWidget):
         search_layout.addWidget(self.search_prev_btn)
         search_layout.addWidget(self.search_next_btn)
         grid.addLayout(search_layout, 4, 0, 1, 3)
-
         self.search_prev_btn.clicked.connect(
             lambda: self.find_next(backward=True))
         self.search_next_btn.clicked.connect(self.find_next)
@@ -77,8 +95,6 @@ class GUIDReplacer(QWidget):
         self.text_preview.setReadOnly(True)
         grid.addWidget(self.text_preview, 5, 0, 1, 3)
 
-        layout.addLayout(grid)
-
         # Горячие клавиши
         QShortcut(QKeySequence("Ctrl+O"), self, self.pick_xml)
         QShortcut(QKeySequence("Ctrl+S"), self, self.replace_guids)
@@ -89,7 +105,6 @@ class GUIDReplacer(QWidget):
         self._search_current = -1
         self._search_pattern_last = ""
 
-        # Вспомогательные переменные
         self.guid_map = {}
         self.xml_file = ""
         self.csv_file = ""
@@ -119,18 +134,20 @@ class GUIDReplacer(QWidget):
         else:
             app.setStyle("Fusion")
             palette = QPalette()
-            palette.setColor(QPalette.Window, QColor(30, 30, 30))
+            base_gray = QColor(122, 122, 122)        # #7A7A7A
+            dark_gray = QColor(80, 80, 80)           # #505050
+            palette.setColor(QPalette.Window, base_gray)
             palette.setColor(QPalette.WindowText, Qt.white)
-            palette.setColor(QPalette.Base, QColor(32, 32, 32))
-            palette.setColor(QPalette.AlternateBase, QColor(44, 44, 44))
+            palette.setColor(QPalette.Base, dark_gray)
+            palette.setColor(QPalette.AlternateBase, base_gray)
             palette.setColor(QPalette.ToolTipBase, Qt.white)
-            palette.setColor(QPalette.ToolTipText, Qt.white)
+            palette.setColor(QPalette.ToolTipText, Qt.black)
             palette.setColor(QPalette.Text, Qt.white)
-            palette.setColor(QPalette.Button, QColor(44, 44, 44))
+            palette.setColor(QPalette.Button, base_gray)
             palette.setColor(QPalette.ButtonText, Qt.white)
             palette.setColor(QPalette.BrightText, Qt.red)
-            palette.setColor(QPalette.Highlight, QColor(38, 79, 120))
-            palette.setColor(QPalette.HighlightedText, Qt.white)
+            palette.setColor(QPalette.Highlight, QColor(61, 174, 233))
+            palette.setColor(QPalette.HighlightedText, Qt.black)
             app.setPalette(palette)
             self.action_light.setChecked(False)
             self.action_dark.setChecked(True)
@@ -155,8 +172,9 @@ class GUIDReplacer(QWidget):
     def try_render_preview(self):
         xml_path = self.xml_input.text().strip()
         csv_path = self.csv_input.text().strip()
+        self.text_preview.clear()
+        self.tree_xml.clear()
         if not (os.path.isfile(xml_path) and os.path.isfile(csv_path)):
-            self.text_preview.clear()
             return
         try:
             self.guid_map = backend.load_guid_map(csv_path)
@@ -165,8 +183,8 @@ class GUIDReplacer(QWidget):
             QMessageBox.critical(self, "Ошибка чтения", str(e))
             return
 
+        # Формирование предпросмотра с выделением uid и новых значений
         highlights = backend.find_uid_matches(xml_text, self.guid_map)
-        self.text_preview.clear()
         fmt_plain = QTextCharFormat()
         fmt_old = QTextCharFormat()
         fmt_old.setForeground(QColor("red"))
@@ -182,11 +200,104 @@ class GUIDReplacer(QWidget):
             pos = end
         cursor.insertText(xml_text[pos:], fmt_plain)
 
+        # --- АНАЛИЗ СТРУКТУРЫ XML ---
+        self.build_xml_tree_with_ns(xml_text)
+
         # Сброс поиска
         self._search_indices = []
         self._search_current = -1
         self._search_pattern_last = ""
         self.text_preview.setExtraSelections([])
+
+    def build_xml_tree_with_ns(self, xml_text):
+        from xml.etree.ElementTree import ParseError
+
+        self.tree_xml.clear()
+
+        # "readable" парсинг с устранением ошибок корня
+        txt = xml_text.lstrip()
+        is_cim_root = False
+        # — есть ли корректный корень вида <rdf:RDF ...>
+        if re.match(r"<\?xml\b[^>]*\?>", txt):
+            # xml declaration есть, памятьаем...
+            xml_decl_end = txt.find("?>") + 2
+            body = txt[xml_decl_end:].lstrip()
+            is_cim_root = bool(re.match(r"<[a-zA-Z_][a-zA-Z0-9\-\._]*:", body))
+        else:
+            is_cim_root = bool(re.match(r"<[a-zA-Z_][a-zA-Z0-9\-\._]*:", txt))
+
+        try:
+            safe_xml = xml_text.lstrip()
+            if not is_cim_root:
+                # Удаляем xml declaration (если есть)
+                safe_xml = re.sub(
+                    r"<\?xml\b[^>]*\?>", "", safe_xml, count=1).lstrip()
+                safe_xml = "<ROOT>\n" + safe_xml + "\n</ROOT>"
+            # далее как раньше
+            ns_map = dict(re.findall(
+                r'xmlns:([A-Za-z0-9_]+)="([^"]+)"', safe_xml))
+            ns_uri2prefix = {uri: prefix for prefix, uri in ns_map.items()}
+            context = ET.iterparse(io.StringIO(safe_xml), events=("start",))
+            parents = []
+            top_item = None
+            elem2item = {None: None}
+            for event, elem in context:
+                tag = elem.tag
+                if "}" in tag:
+                    nsuri, shorttag = tag[1:].split("}")
+                    prefix = ns_uri2prefix.get(nsuri, "")
+                    tag = f"{prefix}:{shorttag}" if prefix else shorttag
+                label = tag
+                uid = (elem.attrib.get('{http://www.w3.org/1999/02/22-rdf-syntax-ns#}about')
+                       or elem.attrib.get('rdf:about')
+                       or elem.attrib.get('rdf:resource')
+                       or elem.attrib.get('about')
+                       or elem.attrib.get('resource'))
+                if uid:
+                    label += f" [{uid}]"
+                node = QTreeWidgetItem([label])
+                node.setData(0, Qt.UserRole, (tag, elem.attrib.copy()))
+                if not parents:
+                    self.tree_xml.addTopLevelItem(node)
+                else:
+                    par = elem2item[parents[-1]]
+                    if par is not None:
+                        par.addChild(node)
+                elem2item[elem] = node
+                parents.append(elem)
+            self.tree_xml.expandToDepth(2)
+        except ParseError as e:
+            self.tree_xml.addTopLevelItem(QTreeWidgetItem(
+                [f"XML с ошибкой структуры ({str(e)})"]))
+
+    def get_namespace_map(self, xml_text):
+        # Префиксы xmlns:... и основное пространство имён
+        ns_map = dict(re.findall(r'xmlns:([A-Za-z0-9_]+)="([^"]+)"', xml_text))
+        return ns_map
+
+    def xmltree_item_clicked(self, item, column):
+        tag, attrib = item.data(0, Qt.UserRole) or (None, {})
+        if not tag:
+            return
+        text = self.text_preview.toPlainText()
+        pattern = f"<{tag}"  # ищем <tag ... или <ns:tag ...
+        idx = text.find(pattern)
+        if idx == -1:
+            # Пробуем с namespace если не найдено
+            matches = re.findall(rf"<([a-zA-Z0-9_]+):{tag}", text)
+            if matches:
+                pattern = f"<{matches[0]}:{tag}"
+                idx = text.find(pattern)
+        if idx == -1:
+            return
+        endidx = text.find(">", idx)
+        if endidx < idx:
+            endidx = idx + len(tag)
+        cursor = self.text_preview.textCursor()
+        cursor.setPosition(idx)
+        cursor.setPosition(endidx + 1, QTextCursor.KeepAnchor)
+        self.text_preview.setTextCursor(cursor)
+        self.text_preview.ensureCursorVisible()
 
     def replace_guids(self):
         xml_path = self.xml_input.text().strip()
@@ -211,7 +322,6 @@ class GUIDReplacer(QWidget):
         QMessageBox.information(
             self, "Готово", f"Завершено! Новый файл: {out_path}")
 
-    # ---------- ПОИСК ----------
     def focus_search(self):
         self.search_line.setFocus()
 
@@ -227,7 +337,6 @@ class GUIDReplacer(QWidget):
         text = self.text_preview.toPlainText()
         regex = re.compile(re.escape(pattern), re.IGNORECASE)
 
-        # При новом шаблоне сбрасываем индексы
         if pattern != self._search_pattern_last:
             self._search_indices = [(m.start(), m.end())
                                     for m in regex.finditer(text)]
@@ -239,7 +348,6 @@ class GUIDReplacer(QWidget):
             self.text_preview.setExtraSelections([])
             return
 
-        # Циклический переход
         if backward:
             if self._search_current == -1:
                 self._search_current = num_matches - 1
@@ -249,18 +357,15 @@ class GUIDReplacer(QWidget):
             self._search_current = (self._search_current + 1) % num_matches
 
         sel_start, sel_end = self._search_indices[self._search_current]
-
-        # setExtraSelections для текущего совпадения (НЕ меняет существующий стиль текста)
         selection = QTextEdit.ExtraSelection()
         search_fmt = QTextCharFormat()
-        search_fmt.setBackground(QColor('#fff69b'))  # светло-жёлтый для поиска
+        search_fmt.setBackground(QColor('#fff69b'))
         selection.format = search_fmt
         selection.cursor = self.text_preview.textCursor()
         selection.cursor.setPosition(sel_start)
         selection.cursor.setPosition(sel_end, QTextCursor.KeepAnchor)
         self.text_preview.setExtraSelections([selection])
 
-        # Прокрутка и видимый курсор
         cursor = self.text_preview.textCursor()
         cursor.setPosition(sel_start)
         cursor.setPosition(sel_end, QTextCursor.KeepAnchor)
