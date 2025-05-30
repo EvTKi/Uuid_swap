@@ -1,22 +1,24 @@
-# main_ui.py
-
 import sys
 import os
-
-from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QLineEdit, QTextEdit, QGridLayout, QFileDialog,
-                               QMessageBox, QMenuBar, QVBoxLayout)
-from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor, QFont, QShortcut, QKeySequence, QPalette, QAction
-
-from PySide6.QtGui import QTextCharFormat, QColor, QTextCursor, QFont, QShortcut, QKeySequence, QPalette
+import re
+from PySide6.QtWidgets import (
+    QApplication, QWidget, QLabel, QPushButton, QLineEdit, QTextEdit, QGridLayout, QFileDialog,
+    QMessageBox, QMenuBar, QVBoxLayout, QHBoxLayout
+)
+from PySide6.QtGui import (
+    QTextCharFormat, QColor, QTextCursor, QFont, QShortcut, QKeySequence, QPalette, QAction
+)
 from PySide6.QtCore import Qt
+
 import backend  # backend.py должен быть рядом
 
 
 class GUIDReplacer(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Замена GUID в XML по CSV (PySide6 с темами)")
-        self.resize(940, 730)
+        self.setWindowTitle(
+            "Замена GUID в XML по CSV (PySide6 с поиском и темами)")
+        self.resize(940, 800)
         self.current_theme = "light"
 
         # --- Меню ---
@@ -34,7 +36,7 @@ class GUIDReplacer(QWidget):
         self.action_dark.triggered.connect(lambda: self.set_theme('dark'))
         layout.setMenuBar(self.menubar)
 
-        # --- UI ---
+        # --- Поля и кнопки выбора файлов ---
         grid = QGridLayout()
         self.xml_input = QLineEdit()
         self.csv_input = QLineEdit()
@@ -51,21 +53,47 @@ class GUIDReplacer(QWidget):
         self.replace_btn = QPushButton("Выполнить замену")
         grid.addWidget(self.replace_btn, 2, 0, 1, 3)
         self.replace_btn.clicked.connect(self.replace_guids)
+
+        # --- Search bar ---
         grid.addWidget(QLabel("Преобразованный XML с подсветкой:"), 3, 0, 1, 3)
+        search_layout = QHBoxLayout()
+        self.search_line = QLineEdit()
+        self.search_line.setPlaceholderText("Поиск...")
+        self.search_prev_btn = QPushButton("Назад ↑")
+        self.search_next_btn = QPushButton("Вперёд ↓")
+        search_layout.addWidget(self.search_line)
+        search_layout.addWidget(self.search_prev_btn)
+        search_layout.addWidget(self.search_next_btn)
+        grid.addLayout(search_layout, 4, 0, 1, 3)
+
+        self.search_prev_btn.clicked.connect(
+            lambda: self.find_next(backward=True))
+        self.search_next_btn.clicked.connect(self.find_next)
+        self.search_line.returnPressed.connect(self.find_next)
+
+        # --- QTextEdit для предпросмотра ---
         self.text_preview = QTextEdit()
         self.text_preview.setFont(QFont("Consolas", 10))
         self.text_preview.setReadOnly(True)
-        grid.addWidget(self.text_preview, 4, 0, 1, 3)
+        grid.addWidget(self.text_preview, 5, 0, 1, 3)
+
         layout.addLayout(grid)
 
-        # --- Горячие клавиши ---
+        # Горячие клавиши
         QShortcut(QKeySequence("Ctrl+O"), self, self.pick_xml)
         QShortcut(QKeySequence("Ctrl+S"), self, self.replace_guids)
-        # поиск будет позже: QShortcut(QKeySequence("Ctrl+F"), self, ...)
+        QShortcut(QKeySequence("Ctrl+F"), self, self.focus_search)
 
+        # Поисковые переменные
+        self._search_indices = []
+        self._search_current = -1
+        self._search_pattern_last = ""
+
+        # Вспомогательные переменные
         self.guid_map = {}
         self.xml_file = ""
         self.csv_file = ""
+
         self.set_theme("light")
 
     def set_theme(self, theme):
@@ -128,6 +156,7 @@ class GUIDReplacer(QWidget):
         xml_path = self.xml_input.text().strip()
         csv_path = self.csv_input.text().strip()
         if not (os.path.isfile(xml_path) and os.path.isfile(csv_path)):
+            self.text_preview.clear()
             return
         try:
             self.guid_map = backend.load_guid_map(csv_path)
@@ -153,6 +182,12 @@ class GUIDReplacer(QWidget):
             pos = end
         cursor.insertText(xml_text[pos:], fmt_plain)
 
+        # Сброс поиска
+        self._search_indices = []
+        self._search_current = -1
+        self._search_pattern_last = ""
+        self.text_preview.setExtraSelections([])
+
     def replace_guids(self):
         xml_path = self.xml_input.text().strip()
         csv_path = self.csv_input.text().strip()
@@ -175,6 +210,62 @@ class GUIDReplacer(QWidget):
             return
         QMessageBox.information(
             self, "Готово", f"Завершено! Новый файл: {out_path}")
+
+    # ---------- ПОИСК ----------
+    def focus_search(self):
+        self.search_line.setFocus()
+
+    def find_next(self, backward=False):
+        pattern = self.search_line.text()
+        if not pattern:
+            self.text_preview.setExtraSelections([])
+            self._search_indices = []
+            self._search_current = -1
+            self._search_pattern_last = ""
+            return
+
+        text = self.text_preview.toPlainText()
+        regex = re.compile(re.escape(pattern), re.IGNORECASE)
+
+        # При новом шаблоне сбрасываем индексы
+        if pattern != self._search_pattern_last:
+            self._search_indices = [(m.start(), m.end())
+                                    for m in regex.finditer(text)]
+            self._search_current = -1
+            self._search_pattern_last = pattern
+
+        num_matches = len(self._search_indices)
+        if not num_matches:
+            self.text_preview.setExtraSelections([])
+            return
+
+        # Циклический переход
+        if backward:
+            if self._search_current == -1:
+                self._search_current = num_matches - 1
+            else:
+                self._search_current = (self._search_current - 1) % num_matches
+        else:
+            self._search_current = (self._search_current + 1) % num_matches
+
+        sel_start, sel_end = self._search_indices[self._search_current]
+
+        # setExtraSelections для текущего совпадения (НЕ меняет существующий стиль текста)
+        selection = QTextEdit.ExtraSelection()
+        search_fmt = QTextCharFormat()
+        search_fmt.setBackground(QColor('#fff69b'))  # светло-жёлтый для поиска
+        selection.format = search_fmt
+        selection.cursor = self.text_preview.textCursor()
+        selection.cursor.setPosition(sel_start)
+        selection.cursor.setPosition(sel_end, QTextCursor.KeepAnchor)
+        self.text_preview.setExtraSelections([selection])
+
+        # Прокрутка и видимый курсор
+        cursor = self.text_preview.textCursor()
+        cursor.setPosition(sel_start)
+        cursor.setPosition(sel_end, QTextCursor.KeepAnchor)
+        self.text_preview.setTextCursor(cursor)
+        self.text_preview.ensureCursorVisible()
 
 
 if __name__ == "__main__":
