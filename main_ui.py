@@ -1,3 +1,4 @@
+# main_ui.py
 import sys
 import os
 import re
@@ -47,7 +48,7 @@ class GUIDReplacer(QWidget):
         self.splitter.addWidget(self.tree_xml)
         self.tree_xml.setMinimumWidth(280)
         self.tree_xml.itemClicked.connect(self.xmltree_item_clicked)
-
+        self.tag_parent_map = []
         # -- Правая панель: всё остальное
         container = QWidget()
         grid = QGridLayout(container)
@@ -183,6 +184,7 @@ class GUIDReplacer(QWidget):
             QMessageBox.critical(self, "Ошибка чтения", str(e))
             return
 
+        # Только если мы без исключений прочитали xml_text, работаем дальше!
         # Формирование предпросмотра с выделением uid и новых значений
         highlights = backend.find_uid_matches(xml_text, self.guid_map)
         fmt_plain = QTextCharFormat()
@@ -202,12 +204,70 @@ class GUIDReplacer(QWidget):
 
         # --- АНАЛИЗ СТРУКТУРЫ XML ---
         self.build_xml_tree_with_ns(xml_text)
+        self.tag_parent_map = self.build_tag_parent_map(xml_text)
 
         # Сброс поиска
         self._search_indices = []
         self._search_current = -1
         self._search_pattern_last = ""
         self.text_preview.setExtraSelections([])
+
+    def build_tag_parent_map(self, xml_text):
+        """
+        Составляет карту: (parent_tag, parent_uid, child_tag, child_attribs, start_pos)
+        """
+        import xml.etree.ElementTree as ET
+        import re
+
+        tag_parent_map = []
+        PAT = re.compile(r"<([a-zA-Z0-9_:\-\.]+)\b([^>]*)>")
+
+        # Avoid parsing errors
+        safe_xml = xml_text
+        if not re.match(r"\s*<\?xml", safe_xml):
+            safe_xml = "<ROOT>\n" + safe_xml + "\n</ROOT>"
+
+        try:
+            et = ET.ElementTree(ET.fromstring(safe_xml))
+        except Exception:
+            return []
+
+        # Собираем все стартовые позиции интересующего тега в тексте
+        matches = list(PAT.finditer(xml_text))
+        ci = 0  # current index in matches
+
+        for parent in et.iter():
+            parent_tag = parent.tag
+            parent_about = parent.attrib.get('{http://www.w3.org/1999/02/22-rdf-syntax-ns#}about') or \
+                parent.attrib.get('rdf:about')
+            for child in parent:
+                child_tag = child.tag
+                child_attribs = child.attrib.copy()
+                child_resource = child.attrib.get('{http://www.w3.org/1999/02/22-rdf-syntax-ns#}resource') or \
+                    child.attrib.get('rdf:resource')
+
+                # Нам интересны дочерние теги, можно сузить до конкретного типа
+                # например, Folder.CreatingNode:
+                if child_tag.endswith('Folder.CreatingNode'):
+                    # ищем start_pos для этого child_tag в исходном тексте
+                    # Используем resource для точности
+                    start_pos = None
+                    while ci < len(matches):
+                        m = matches[ci]
+                        name = m.group(1)
+                        attrs = m.group(2)
+                        ci += 1
+                        if name.endswith('Folder.CreatingNode'):
+                            if child_resource and child_resource in attrs:
+                                start_pos = m.start()
+                                break
+                            elif not child_resource:
+                                start_pos = m.start()
+                                break
+                    tag_parent_map.append((
+                        parent_tag, parent_about, child_tag, child_resource, start_pos
+                    ))
+        return tag_parent_map
 
     def build_xml_tree_with_ns(self, xml_text):
         import io
@@ -285,11 +345,45 @@ class GUIDReplacer(QWidget):
         tag, attrib = item.data(0, Qt.UserRole) or (None, {})
         if not tag:
             return
+        parent_item = item.parent()
+        parent_tag = parent_about = None
+        if parent_item:
+            parent_tag, parent_attrib = parent_item.data(
+                0, Qt.UserRole) or (None, {})
+            parent_about = (
+                parent_attrib.get(
+                    '{http://www.w3.org/1999/02/22-rdf-syntax-ns#}about')
+                or parent_attrib.get('rdf:about')
+                or parent_attrib.get('about')
+            )
+
+        # === added/changed ===
+        # Если клик по Folder.CreatingNode — ищем только ту пару, где родитель совпадает!
+        if tag.endswith("Folder.CreatingNode") and self.tag_parent_map:
+            # Берём resource текущего
+            resource = attrib.get('{http://www.w3.org/1999/02/22-rdf-syntax-ns#}resource') or attrib.get(
+                'rdf:resource') or attrib.get('resource')
+
+            for (ptag, pabout, ctag, cres, start_pos) in self.tag_parent_map:
+                if (
+                    ptag == parent_tag and
+                    pabout == parent_about and
+                    ctag.endswith("Folder.CreatingNode") and
+                    resource == cres and
+                    start_pos is not None
+                ):
+                    cursor = self.text_preview.textCursor()
+                    cursor.setPosition(start_pos)
+                    self.text_preview.setTextCursor(cursor)
+                    self.text_preview.ensureCursorVisible()
+                    return  # Нашли и перешли, выход
+        # === /added ===
+
+        # Если не Folder.CreatingNode или не нашли — как раньше, по названию
         text = self.text_preview.toPlainText()
-        pattern = f"<{tag}"  # ищем <tag ... или <ns:tag ...
+        pattern = f"<{tag}"
         idx = text.find(pattern)
         if idx == -1:
-            # Пробуем с namespace если не найдено
             matches = re.findall(rf"<([a-zA-Z0-9_]+):{tag}", text)
             if matches:
                 pattern = f"<{matches[0]}:{tag}"
