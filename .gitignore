@@ -1,2 +1,4 @@
-/Folder1_2025.05.30.xml
-/Folder1_2025.05.30_output.xml
+*.xml
+/build
+/__pycache__
+*.spec

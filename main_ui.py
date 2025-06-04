@@ -178,7 +178,7 @@ class GUIDReplacer(QWidget):
         if not (os.path.isfile(xml_path) and os.path.isfile(csv_path)):
             return
         try:
-            self.guid_map = backend.load_guid_map(csv_path)
+            self.guid_map, *_ = backend.load_guid_map(csv_path)
             xml_text = backend.read_text_file(xml_path)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка чтения", str(e))
@@ -406,7 +406,8 @@ class GUIDReplacer(QWidget):
             QMessageBox.warning(self, "Внимание", "Выберите оба файла!")
             return
         try:
-            guid_map = backend.load_guid_map(csv_path)
+            guid_map, gen_rows, all_rows, fieldnames = backend.load_guid_map(
+                csv_path)
             xml_text = backend.read_text_file(xml_path)
             result_text = backend.replace_guids(xml_text, guid_map)
         except Exception as e:
@@ -419,6 +420,16 @@ class GUIDReplacer(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка записи", str(e))
             return
+        # --- Новое -- обновляем CSV, если были сгенерированы new_uid
+        if gen_rows:
+            try:
+                backend.write_guid_map(csv_path, all_rows, fieldnames)
+            except Exception as e:
+                QMessageBox.warning(self, "Ошибка обновления CSV", str(e))
+                # не критично — продолжаем
+            else:
+                QMessageBox.information(
+                    self, "CSV обновлён", f"Сгенерированные UID записаны в {csv_path}")
         QMessageBox.information(
             self, "Готово", f"Завершено! Новый файл: {out_path}")
 

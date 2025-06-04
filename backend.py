@@ -1,5 +1,3 @@
-# backend.py
-
 import csv
 import re
 import uuid
@@ -8,22 +6,46 @@ import os
 
 def load_guid_map(csv_path):
     """
-    Загружает соответствия из CSV и возвращает dict {old_uid: new_uid}
+    Загружает соответствия из CSV и возвращает dict {old_uid: new_uid}, 
+    а также список автоматически сгенерированных new_uid для дальнейшей записи.
     """
     guid_map = {}
+    gen_rows = []  # [(row_num, old_uid, new_uid)]
+    all_rows = []  # [(old_uid, new_uid)] для перезаписи
     try:
         with open(csv_path, newline='', encoding='utf-8') as csvfile:
             reader = csv.DictReader(csvfile, delimiter=';')
-            for row in reader:
+            fieldnames = reader.fieldnames
+            for idx, row in enumerate(reader):
                 old_uid = row.get('old_uid', '').strip()
                 new_uid = row.get('new_uid', '').strip()
                 if old_uid:
                     if not new_uid:
                         new_uid = str(uuid.uuid4())
+                        gen_rows.append((idx, old_uid, new_uid))
                     guid_map[old_uid] = new_uid
+                    all_rows.append((old_uid, new_uid))
     except Exception as e:
         raise RuntimeError(f'Ошибка чтения CSV: {e}')
-    return guid_map
+    return guid_map, gen_rows, all_rows, fieldnames
+
+
+def write_guid_map(csv_path, all_rows, fieldnames):
+    """
+    Перезаписывает CSV-файл, подставляя сгенерированные new_uid.
+    """
+    try:
+        with open(csv_path, "w", newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile, delimiter=';')
+            if not fieldnames:
+                fieldnames = ['old_uid', 'new_uid']
+            writer.writerow(fieldnames)
+            for old_uid, new_uid in all_rows:
+                writer.writerow([old_uid, new_uid])
+    except Exception as e:
+        raise RuntimeError(f'Ошибка обновления CSV: {e}')
+
+# Остальные функции не меняются
 
 
 def read_text_file(path):
@@ -43,10 +65,6 @@ def save_text_file(path, text):
 
 
 def find_uid_matches(xml_text, guid_map):
-    """
-    Находит ВСЕ вхождения old_uid в строке xml_text (возвращает список из tuple: (start, end, old_uid, new_uid))
-    Дубликаты uid поддерживаются.
-    """
     if not guid_map:
         return []
     matches = []
@@ -60,9 +78,6 @@ def find_uid_matches(xml_text, guid_map):
 
 
 def replace_guids(xml_text, guid_map):
-    """
-    Возвращает xml_text, где все old_uid из dict заменены на новые.
-    """
     if not guid_map:
         return xml_text
     keys = sorted(guid_map, key=len, reverse=True)
